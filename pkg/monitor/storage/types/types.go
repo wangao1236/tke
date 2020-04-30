@@ -20,6 +20,12 @@ package types
 
 import "github.com/influxdata/influxdb1-client/models"
 
+const (
+	ThanosType = "thanos"
+	EsType = "elasticsearch"
+	InfluxdbType = "influxdb"
+)
+
 // MetricResult defines the single metric result
 type MetricResult struct {
 	MaxValue *float64     `json:"maxValue,omitempty"`

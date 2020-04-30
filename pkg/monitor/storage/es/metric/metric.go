@@ -28,6 +28,7 @@ import (
 	"tkestack.io/tke/api/monitor"
 	"tkestack.io/tke/pkg/monitor/storage/es/client"
 	"tkestack.io/tke/pkg/monitor/storage/types"
+	"tkestack.io/tke/pkg/monitor/util"
 	"tkestack.io/tke/pkg/util/log"
 )
 
@@ -40,13 +41,14 @@ func (s *ES) Query(query *monitor.MetricQuery) (*types.MetricMergedResult, error
 	// convert query condition
 	conditions := make([]interface{}, len(query.Conditions))
 	for i, condition := range query.Conditions {
+		if condition.Key == "tke_cluster_instance_id" {
+			condition.Key = "cluster_id"
+			util.ParseClusterConditions(types.EsType, &condition)
+		}
 		tmp := make([]interface{}, 3)
 		tmp[0] = condition.Key
 		tmp[1] = condition.Expr
 		tmp[2] = condition.Value
-		if tmp[0] == "tke_cluster_instance_id" {
-			tmp[0] = "cluster_id"
-		}
 		conditions[i] = tmp
 	}
 
@@ -154,7 +156,7 @@ func (s *ES) Query(query *monitor.MetricQuery) (*types.MetricMergedResult, error
 		col, result, err := s.availableClient.QueryMonitor(table, *startT, *endT, orderBy, order,
 			limit, query.Offset, append(conditions, fieldFilter), groupBy, []string{fld})
 		if err != nil {
-			log.Errorf("Failed to query database", log.Err(err))
+			log.Errorf("Failed to query database: %v", log.Err(err))
 			return nil, errors.NewBadRequest(err.Error())
 		}
 		log.Debugf("columns %s", col)
