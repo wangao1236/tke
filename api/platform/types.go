@@ -1136,7 +1136,8 @@ type CSIOperatorSpec struct {
 	TenantID    string
 	ClusterName string
 	// Version of the CSI operator.
-	Version string
+	Version         string
+	KubeletRootPath string
 }
 
 // CSIOperatorStatus is information about the current status of a storage operator.
