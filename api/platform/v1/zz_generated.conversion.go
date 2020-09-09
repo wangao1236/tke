@@ -1184,6 +1184,7 @@ func autoConvert_v1_CSIOperatorSpec_To_platform_CSIOperatorSpec(in *CSIOperatorS
 	out.TenantID = in.TenantID
 	out.ClusterName = in.ClusterName
 	out.Version = in.Version
+	out.KubeletRootDir = in.KubeletRootDir
 	return nil
 }
 
@@ -1196,6 +1197,7 @@ func autoConvert_platform_CSIOperatorSpec_To_v1_CSIOperatorSpec(in *platform.CSI
 	out.TenantID = in.TenantID
 	out.ClusterName = in.ClusterName
 	out.Version = in.Version
+	out.KubeletRootDir = in.KubeletRootDir
 	return nil
 }
 

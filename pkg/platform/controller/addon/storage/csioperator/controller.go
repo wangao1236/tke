@@ -22,11 +22,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
-	"time"
-
-	"tkestack.io/tke/pkg/platform/provider/baremetal/phases/csioperator/images"
-
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -40,12 +35,17 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
+	"strings"
+	"sync"
+	"time"
 	clientset "tkestack.io/tke/api/client/clientset/versioned"
 	platformv1informer "tkestack.io/tke/api/client/informers/externalversions/platform/v1"
 	platformv1lister "tkestack.io/tke/api/client/listers/platform/v1"
 	v1 "tkestack.io/tke/api/platform/v1"
 	controllerutil "tkestack.io/tke/pkg/controller"
 	storageutil "tkestack.io/tke/pkg/platform/controller/addon/storage/util"
+	"tkestack.io/tke/pkg/platform/provider/baremetal/phases/csioperator/images"
+	"tkestack.io/tke/pkg/platform/registry/csioperator"
 	"tkestack.io/tke/pkg/platform/util"
 	containerregistryutil "tkestack.io/tke/pkg/util/containerregistry"
 	"tkestack.io/tke/pkg/util/log"
@@ -55,9 +55,10 @@ import (
 const (
 	controllerName = "csi-operator-controller"
 
-	crbName        = "csi-operator-role-binding"
-	svcAccountName = "csi-operator"
-	deploymentName = "csi-operator"
+	crbName           = "csi-operator-role-binding"
+	svcAccountName    = "csi-operator"
+	deploymentName    = "csi-operator"
+	kubeletRootDirArg = "kubelet-root-dir"
 
 	clientRetryCount    = 5
 	clientRetryInterval = 5 * time.Second
@@ -231,6 +232,13 @@ func (c *Controller) processCSIOperatorDelete(ctx context.Context, cachedCSIOper
 }
 
 func (c *Controller) processCSIOperatorUpdate(ctx context.Context, cachedCSIOperator *cachedCSIOperator, csiOperator *v1.CSIOperator, key string) error {
+	if len(csiOperator.Spec.KubeletRootDir) == 0 {
+		csiOperator.Spec.KubeletRootDir = c.syncKubeletRootDir(ctx, csiOperator)
+		if err := c.persistUpdate(ctx, csiOperator); err != nil {
+			return err
+		}
+	}
+
 	if cachedCSIOperator.state != nil {
 		// exist and the cluster name changed
 		if cachedCSIOperator.state.UID != csiOperator.UID {
@@ -263,7 +271,7 @@ func (c *Controller) csiOperatorReinitialize(
 			csiOperator.Status.Phase = v1.AddonPhaseChecking
 			csiOperator.Status.Reason = ""
 			csiOperator.Status.LastReInitializingTimestamp = metav1.NewTime(time.Now())
-			err = c.persistUpdate(ctx, csiOperator)
+			err = c.persistUpdateStatus(ctx, csiOperator)
 			if err != nil {
 				return true, err
 			}
@@ -283,7 +291,7 @@ func (c *Controller) csiOperatorReinitialize(
 			csiOperator = csiOperator.DeepCopy()
 			csiOperator.Status.Phase = v1.AddonPhaseFailed
 			csiOperator.Status.Reason = fmt.Sprintf("Install error and retried max(%d) times already.", maxRetryCount)
-			err := c.persistUpdate(ctx, csiOperator)
+			err := c.persistUpdateStatus(ctx, csiOperator)
 			if err != nil {
 				log.Error("Update CSIOperator failed", log.Err(err))
 				return true, err
@@ -297,7 +305,7 @@ func (c *Controller) csiOperatorReinitialize(
 		csiOperator.Status.Reason = err.Error()
 		csiOperator.Status.LastReInitializingTimestamp = metav1.NewTime(time.Now())
 		csiOperator.Status.RetryCount++
-		return true, c.persistUpdate(ctx, csiOperator)
+		return true, c.persistUpdateStatus(ctx, csiOperator)
 	}
 }
 
@@ -316,7 +324,7 @@ func (c *Controller) createCSIOperatorIfNeeded(
 			csiOperator.Status.Phase = v1.AddonPhaseChecking
 			csiOperator.Status.Reason = ""
 			csiOperator.Status.RetryCount = 0
-			return c.persistUpdate(ctx, csiOperator)
+			return c.persistUpdateStatus(ctx, csiOperator)
 		}
 		// Install CSIOperator failed.
 		csiOperator = csiOperator.DeepCopy()
@@ -325,7 +333,7 @@ func (c *Controller) createCSIOperatorIfNeeded(
 		csiOperator.Status.Reason = err.Error()
 		csiOperator.Status.RetryCount = 1
 		csiOperator.Status.LastReInitializingTimestamp = metav1.Now()
-		return c.persistUpdate(ctx, csiOperator)
+		return c.persistUpdateStatus(ctx, csiOperator)
 	case v1.AddonPhaseReinitializing:
 		var interval = time.Since(csiOperator.Status.LastReInitializingTimestamp.Time)
 		var waitTime time.Duration
@@ -361,13 +369,13 @@ func (c *Controller) createCSIOperatorIfNeeded(
 			}()
 		}
 	case v1.AddonPhaseRunning:
-		if c.needUpgrade(ctx, csiOperator) {
+		if c.needUpgrade(ctx, cachedCSIOperator, csiOperator) {
 			c.health.Delete(key)
 			csiOperator = csiOperator.DeepCopy()
 			csiOperator.Status.Phase = v1.AddonPhaseUpgrading
 			csiOperator.Status.Reason = ""
 			csiOperator.Status.RetryCount = 0
-			return c.persistUpdate(ctx, csiOperator)
+			return c.persistUpdateStatus(ctx, csiOperator)
 		}
 		if _, ok := c.health.Load(key); !ok {
 			c.health.Store(key, true)
@@ -407,8 +415,14 @@ func (c *Controller) createCSIOperatorIfNeeded(
 	return nil
 }
 
-func (c *Controller) needUpgrade(ctx context.Context, csiOperator *v1.CSIOperator) bool {
+func (c *Controller) needUpgrade(ctx context.Context, cachedCSIOperator *cachedCSIOperator, csiOperator *v1.CSIOperator) bool {
 	if csiOperator.Spec.Version != csiOperator.Status.Version {
+		return true
+	}
+
+	if cachedCSIOperator != nil && cachedCSIOperator.state != nil &&
+		cachedCSIOperator.state.Spec.KubeletRootDir != csiOperator.Spec.KubeletRootDir &&
+		len(csiOperator.Spec.KubeletRootDir) > 0 {
 		return true
 	}
 
@@ -502,7 +516,8 @@ func (c *Controller) installDeployment(
 	csiOperator *v1.CSIOperator,
 	kubeClient kubernetes.Interface,
 	svInfo *storageutil.SVInfo) error {
-	deploy := c.genDeployment(images.Get(csiOperator.Spec.Version).CSIOperator.FullName(), svInfo)
+	deploy := c.genDeployment(images.Get(csiOperator.Spec.Version).CSIOperator.FullName(), svInfo,
+		getKubeletRootDir(csiOperator))
 	deployClient := kubeClient.AppsV1().Deployments(metav1.NamespaceSystem)
 
 	oldDeploy, err := deployClient.Get(ctx, deploy.Name, metav1.GetOptions{})
@@ -559,7 +574,7 @@ func genCRB() *rbacv1.ClusterRoleBinding {
 	}
 }
 
-func (c *Controller) genDeployment(image string, svInfo *storageutil.SVInfo) *appsv1.Deployment {
+func (c *Controller) genDeployment(image string, svInfo *storageutil.SVInfo, kubeletRootDir string) *appsv1.Deployment {
 	deploy := &appsv1.Deployment{
 		TypeMeta: metav1.TypeMeta{
 			Kind:       "Deployment",
@@ -590,9 +605,10 @@ func (c *Controller) genDeployment(image string, svInfo *storageutil.SVInfo) *ap
 					},
 					Containers: []corev1.Container{
 						{
-							Name:  deploymentName,
-							Image: image,
-							Args:  genContainerArgs(svInfo),
+							Name:            deploymentName,
+							Image:           image,
+							ImagePullPolicy: corev1.PullAlways,
+							Args:            genContainerArgs(svInfo, kubeletRootDir),
 							Resources: corev1.ResourceRequirements{
 								Requests: corev1.ResourceList{
 									// TODO: add support for configuring them
@@ -610,10 +626,55 @@ func (c *Controller) genDeployment(image string, svInfo *storageutil.SVInfo) *ap
 	return deploy
 }
 
-func genContainerArgs(svInfo *storageutil.SVInfo) []string {
+func getKubeletRootDir(csiOperator *v1.CSIOperator) string {
+	if len(csiOperator.Spec.KubeletRootDir) == 0 {
+		return csioperator.DefaultKubeletRootDir
+	}
+	return csiOperator.Spec.KubeletRootDir
+}
+
+func getKubeletRootDirFromDeploy(oldDeploy *appsv1.Deployment) string {
+	if oldDeploy == nil {
+		return csioperator.DefaultKubeletRootDir
+	}
+	containers := oldDeploy.Spec.Template.Spec.Containers
+	for _, container := range containers {
+		if container.Name != deploymentName {
+			continue
+		}
+		if container.Args != nil {
+			for _, arg := range container.Args {
+				kv := strings.Split(arg, "=")
+				if kv != nil && len(kv) == 2 && strings.HasSuffix(kv[0], kubeletRootDirArg) {
+					return kv[1]
+				}
+			}
+		}
+	}
+	return csioperator.DefaultKubeletRootDir
+}
+
+func (c *Controller) syncKubeletRootDir(ctx context.Context, csiOperator *v1.CSIOperator) string {
+	cluster, err := c.client.PlatformV1().Clusters().Get(ctx, csiOperator.Spec.ClusterName, metav1.GetOptions{})
+	if err != nil {
+		return csioperator.DefaultKubeletRootDir
+	}
+	kubeClient, err := util.BuildExternalClientSet(ctx, cluster, c.client.PlatformV1())
+	if err != nil {
+		return csioperator.DefaultKubeletRootDir
+	}
+	deployClient := kubeClient.AppsV1().Deployments(metav1.NamespaceSystem)
+	oldDeploy, err := deployClient.Get(ctx, deploymentName, metav1.GetOptions{})
+	if err != nil {
+		return csioperator.DefaultKubeletRootDir
+	}
+	return getKubeletRootDirFromDeploy(oldDeploy)
+}
+
+func genContainerArgs(svInfo *storageutil.SVInfo, kubeletRootDir string) []string {
 	args := []string{
 		"--leader-election=true",
-		"--kubelet-root-dir=/var/lib/kubelet",
+		fmt.Sprintf("--%s=%s", kubeletRootDirArg, kubeletRootDir),
 		"--registry-domain=" + containerregistryutil.GetPrefix(),
 		"--logtostderr=true",
 		"--v=5",
@@ -726,7 +787,7 @@ func (c *Controller) watchCSIOperatorHealth(ctx context.Context, key string) fun
 			csiOperator = csiOperator.DeepCopy()
 			csiOperator.Status.Phase = v1.AddonPhaseFailed
 			csiOperator.Status.Reason = "CSIOperator is not healthy."
-			if err = c.persistUpdate(ctx, csiOperator); err != nil {
+			if err = c.persistUpdateStatus(ctx, csiOperator); err != nil {
 				return false, err
 			}
 			return true, nil
@@ -773,7 +834,7 @@ func (c *Controller) checkCSIOperatorStatus(
 				csiOperator = csiOperator.DeepCopy()
 				csiOperator.Status.Phase = v1.AddonPhaseFailed
 				csiOperator.Status.Reason = "CSI Operator is not healthy."
-				if err = c.persistUpdate(ctx, csiOperator); err != nil {
+				if err = c.persistUpdateStatus(ctx, csiOperator); err != nil {
 					return false, err
 				}
 				return true, nil
@@ -784,7 +845,7 @@ func (c *Controller) checkCSIOperatorStatus(
 		csiOperator = csiOperator.DeepCopy()
 		csiOperator.Status.Phase = v1.AddonPhaseRunning
 		csiOperator.Status.Reason = ""
-		if err = c.persistUpdate(ctx, csiOperator); err != nil {
+		if err = c.persistUpdateStatus(ctx, csiOperator); err != nil {
 			return false, err
 		}
 
@@ -829,7 +890,7 @@ func (c *Controller) upgradeCSIOperator(
 				csiOperator = csiOperator.DeepCopy()
 				csiOperator.Status.Phase = v1.AddonPhaseFailed
 				csiOperator.Status.Reason = "Upgrade CSIOperator failed."
-				if err = c.persistUpdate(ctx, csiOperator); err != nil {
+				if err = c.persistUpdateStatus(ctx, csiOperator); err != nil {
 					return false, err
 				}
 				return true, nil
@@ -849,7 +910,7 @@ func (c *Controller) upgradeCSIOperator(
 		}
 
 		newDeploy := oldDeploy.DeepCopy()
-		newDeploy.Spec.Template.Spec.Containers[0].Args = genContainerArgs(svInfo)
+		newDeploy.Spec.Template.Spec.Containers[0].Args = genContainerArgs(svInfo, getKubeletRootDir(csiOperator))
 		patchData, err := storageutil.GetPatchData(oldDeploy, newDeploy)
 		if err != nil {
 			log.Error("get deployment patch data of CSIOperator failed",
@@ -873,7 +934,7 @@ func (c *Controller) upgradeCSIOperator(
 		fillOperatorStatus(csiOperator, version)
 		csiOperator.Status.Phase = v1.AddonPhaseChecking
 		csiOperator.Status.Reason = ""
-		if err = c.persistUpdate(ctx, csiOperator); err != nil {
+		if err = c.persistUpdateStatus(ctx, csiOperator); err != nil {
 			return false, err
 		}
 		return true, nil
@@ -883,7 +944,7 @@ func (c *Controller) upgradeCSIOperator(
 func (c *Controller) persistUpdate(ctx context.Context, csiOperator *v1.CSIOperator) error {
 	var err error
 	for i := 0; i < clientRetryCount; i++ {
-		_, err = c.client.PlatformV1().CSIOperators().UpdateStatus(ctx, csiOperator, metav1.UpdateOptions{})
+		_, err = c.client.PlatformV1().CSIOperators().Update(ctx, csiOperator, metav1.UpdateOptions{})
 		if err == nil {
 			return nil
 		}
@@ -897,6 +958,34 @@ func (c *Controller) persistUpdate(ctx context.Context, csiOperator *v1.CSIOpera
 		}
 		if k8serrors.IsConflict(err) {
 			return fmt.Errorf("not persisting update to CSIOperator %q that has been changed since we received it: %v", csiOperator.Spec.ClusterName, err)
+		}
+		log.Warn("Failed to persist updated spec of CSIOperator",
+			log.String("name", csiOperator.Name),
+			log.String("clusterName", csiOperator.Spec.ClusterName),
+			log.String("phase", string(csiOperator.Status.Phase)), log.Err(err))
+		time.Sleep(clientRetryInterval)
+	}
+
+	return err
+}
+
+func (c *Controller) persistUpdateStatus(ctx context.Context, csiOperator *v1.CSIOperator) error {
+	var err error
+	for i := 0; i < clientRetryCount; i++ {
+		_, err = c.client.PlatformV1().CSIOperators().UpdateStatus(ctx, csiOperator, metav1.UpdateOptions{})
+		if err == nil {
+			return nil
+		}
+		// If the object no longer exists, we don't want to recreate it. Just bail
+		// out so that we can process the delete, which we should soon be receiving
+		// if we haven't already.
+		if k8serrors.IsNotFound(err) {
+			log.Info("Not persisting updated status update to CSIOperator that no longer exists",
+				log.String("clusterName", csiOperator.Spec.ClusterName), log.Err(err))
+			return nil
+		}
+		if k8serrors.IsConflict(err) {
+			return fmt.Errorf("not persisting updated status to CSIOperator %q that has been changed since we received it: %v", csiOperator.Spec.ClusterName, err)
 		}
 		log.Warn("Failed to persist updated status of CSIOperator",
 			log.String("name", csiOperator.Name),

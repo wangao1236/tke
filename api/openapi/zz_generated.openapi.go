@@ -44425,8 +44425,14 @@ func schema_tke_api_platform_v1_CSIOperatorSpec(ref common.ReferenceCallback) co
 							Format:      "",
 						},
 					},
+					"kubeletRootDir": {
+						SchemaProps: spec.SchemaProps{
+							Type:   []string{"string"},
+							Format: "",
+						},
+					},
 				},
-				Required: []string{"tenantID", "clusterName"},
+				Required: []string{"tenantID", "clusterName", "kubeletRootDir"},
 			},
 		},
 	}

@@ -1170,7 +1170,8 @@ type CSIOperatorSpec struct {
 	TenantID    string `json:"tenantID" protobuf:"bytes,1,opt,name=tenantID"`
 	ClusterName string `json:"clusterName" protobuf:"bytes,2,opt,name=clusterName"`
 	// Version of the CSI operator.
-	Version string `json:"version,omitempty" protobuf:"bytes,3,opt,name=version"`
+	Version        string `json:"version,omitempty" protobuf:"bytes,3,opt,name=version"`
+	KubeletRootDir string `json:"kubeletRootDir" protobuf:"bytes,4,opt,name=kubeletRootDir"`
 }
 
 // CSIOperatorStatus is information about the current status of a storage operator.

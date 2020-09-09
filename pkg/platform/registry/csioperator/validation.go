@@ -24,6 +24,10 @@ import (
 	"tkestack.io/tke/api/platform"
 )
 
+const (
+	DefaultKubeletRootDir = "/var/lib/kubelet"
+)
+
 // ValidateName is a ValidateNameFunc for names that must be a DNS sub domain.
 var ValidateName = apiMachineryValidation.ValidateNamespaceName
 
@@ -33,6 +37,10 @@ func ValidateCSIOperator(csiOperator *platform.CSIOperator) field.ErrorList {
 
 	if len(csiOperator.Spec.ClusterName) == 0 {
 		allErrs = append(allErrs, field.Required(field.NewPath("spec", "clusterName"), "must specify a cluster name"))
+	}
+
+	if len(csiOperator.Spec.KubeletRootDir) == 0 {
+		csiOperator.Spec.KubeletRootDir = DefaultKubeletRootDir
 	}
 
 	return allErrs

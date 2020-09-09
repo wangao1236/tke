@@ -86,6 +86,8 @@ message CSIOperatorSpec {
 
   // Version of the CSI operator.
   optional string version = 3;
+
+  optional string kubeletRootDir = 4;
 }
 
 // CSIOperatorStatus is information about the current status of a storage operator.
