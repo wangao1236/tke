@@ -149,7 +149,7 @@ func (r *REST) Get(ctx context.Context, projectName string, options *metav1.GetO
 }
 
 func (r *REST) List(ctx context.Context, options *metainternal.ListOptions) (runtime.Object, error) {
-	_, tenantID := authentication.UsernameAndTenantID(ctx)
+	userName, tenantID := authentication.UsernameAndTenantID(ctx)
 	v1opts := &v1.ListOptions{}
 	if tenantID != "" {
 		v1opts = util.PredicateV1ListOptions(tenantID, options)
@@ -162,6 +162,7 @@ func (r *REST) List(ctx context.Context, options *metainternal.ListOptions) (run
 	}
 
 	projectMap := make(map[string]*auth.Project)
+	belongMap := make(map[string]bool)
 
 	for _, policy := range projectPolicyList.Items {
 		project, ok := projectMap[policy.Spec.ProjectID]
@@ -176,10 +177,17 @@ func (r *REST) List(ctx context.Context, options *metainternal.ListOptions) (run
 			}
 		}
 
+		belongs := false
 		for _, subj := range policy.Spec.Users {
+			if subj.Name == userName {
+				belongs = true
+			}
 			if _, ok := project.Users[subj.ID]; !ok {
 				project.Users[subj.ID] = subj.Name
 			}
+		}
+		if belongs {
+			belongMap[policy.Spec.ProjectID] = belongs
 		}
 
 		for _, subj := range policy.Spec.Groups {
@@ -192,8 +200,10 @@ func (r *REST) List(ctx context.Context, options *metainternal.ListOptions) (run
 	}
 
 	projectList := auth.ProjectList{}
-	for _, item := range projectMap {
-		projectList.Items = append(projectList.Items, *item)
+	for prj, item := range projectMap {
+		if belongMap[prj] {
+			projectList.Items = append(projectList.Items, *item)
+		}
 	}
 
 	return &projectList, nil

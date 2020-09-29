@@ -37,23 +37,10 @@ import (
 
 func FilterWithUser(ctx context.Context,
 	projectList *business.ProjectList,
-	authClient authversionedclient.AuthV1Interface,
-	businessClient *businessinternalclient.BusinessClient) (bool, *business.ProjectList, error) {
+	authClient authversionedclient.AuthV1Interface) (*business.ProjectList, error) {
 
 	userName, tenantID := authentication.UsernameAndTenantID(ctx)
 
-	isAdmin := false
-	listOpt := v1.ListOptions{FieldSelector: fmt.Sprintf("spec.tenantID=%s", tenantID)}
-	platformList, err := businessClient.Platforms().List(ctx, listOpt)
-	if err != nil {
-		return false, nil, err
-	}
-	for _, platform := range platformList.Items {
-		if util.InStringSlice(platform.Spec.Administrators, userName) {
-			isAdmin = true
-			break
-		}
-	}
 	var userID string
 	if authClient != nil {
 		userList, err := authClient.Users().List(ctx, v1.ListOptions{
@@ -64,21 +51,18 @@ func FilterWithUser(ctx context.Context,
 			).String(),
 		})
 		if err != nil {
-			return false, nil, err
+			return nil, err
 		}
 		for _, user := range userList.Items {
 			if user.Spec.Name == userName {
 				log.Info("user", log.Any("user", user))
 				userID = user.Name
-				if authutil.IsPlatformAdministrator(user) {
-					isAdmin = true
-				}
 				break
 			}
 		}
 	}
 	if projectList == nil || projectList.Items == nil {
-		return isAdmin, projectList, nil
+		return projectList, nil
 	}
 
 	rawList := projectList.Items
@@ -91,17 +75,11 @@ func FilterWithUser(ctx context.Context,
 				projectList.Items = append(projectList.Items, project)
 			}
 		}
-		return isAdmin, projectList, nil
+		return projectList, nil
 	}
 
-	for _, project := range rawList {
-		if len(project.Spec.Members) > 0 && project.Spec.Members[0] == userName && !picked[project.Name] {
-			picked[project.Name] = true
-			projectList.Items = append(projectList.Items, project)
-		}
-	}
 	if userID == "" {
-		return isAdmin, projectList, nil
+		return projectList, nil
 	}
 
 	belongs := &authv1.ProjectBelongs{}
@@ -112,7 +90,7 @@ func FilterWithUser(ctx context.Context,
 		SetHeader(filter.HeaderTenantID, tenantID).
 		Do(ctx).Into(belongs); err != nil {
 		log.Error("Get user projects failed for tke-auth-api", log.String("user", userName), log.Err(err))
-		return isAdmin, projectList, err
+		return projectList, err
 	}
 	log.Debug("project belongs for user", log.String("user", userName), log.String("userID", userID), log.Any("belongs", belongs))
 	for _, project := range rawList {
@@ -121,5 +99,46 @@ func FilterWithUser(ctx context.Context,
 			projectList.Items = append(projectList.Items, project)
 		}
 	}
-	return isAdmin, projectList, nil
+	return projectList, nil
+}
+
+func CheckAdmin(ctx context.Context, authClient authversionedclient.AuthV1Interface,
+	businessClient *businessinternalclient.BusinessClient) (bool, error) {
+
+	userName, tenantID := authentication.UsernameAndTenantID(ctx)
+
+	isAdmin := false
+	listOpt := v1.ListOptions{FieldSelector: fmt.Sprintf("spec.tenantID=%s", tenantID)}
+	platformList, err := businessClient.Platforms().List(ctx, listOpt)
+	if err != nil {
+		return false, err
+	}
+	for _, platform := range platformList.Items {
+		if util.InStringSlice(platform.Spec.Administrators, userName) {
+			isAdmin = true
+			break
+		}
+	}
+	if authClient != nil {
+		userList, err := authClient.Users().List(ctx, v1.ListOptions{
+			FieldSelector: fields.AndSelectors(
+				fields.OneTermEqualSelector("keyword", userName),
+				fields.OneTermEqualSelector("policy", "true"),
+				fields.OneTermEqualSelector("spec.tenantID", tenantID),
+			).String(),
+		})
+		if err != nil {
+			return false, err
+		}
+		for _, user := range userList.Items {
+			if user.Spec.Name == userName {
+				log.Info("user", log.Any("user", user))
+				if authutil.IsPlatformAdministrator(user) {
+					isAdmin = true
+				}
+				break
+			}
+		}
+	}
+	return isAdmin, nil
 }

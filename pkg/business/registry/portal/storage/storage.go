@@ -21,7 +21,6 @@ package storage
 import (
 	"context"
 	"fmt"
-
 	metainternal "k8s.io/apimachinery/pkg/apis/meta/internalversion"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -106,7 +105,8 @@ func (r *REST) List(ctx context.Context, _ *metainternal.ListOptions) (runtime.O
 	}
 
 	log.Debugf("business portal list, before FilterWithUser: %v", projectList)
-	isAdmin, projectList, err := registryUtil.FilterWithUser(ctx, projectList, r.authClient, r.businessClient)
+	isAdmin, _ := registryUtil.CheckAdmin(ctx, r.authClient, r.businessClient)
+	projectList, err = registryUtil.FilterWithUser(ctx, projectList, r.authClient)
 	log.Debugf("business portal list, after FilterWithUser: %v", projectList)
 	if err != nil {
 		return nil, err

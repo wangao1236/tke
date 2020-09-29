@@ -21,6 +21,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	registryUtil "tkestack.io/tke/pkg/business/registry/util"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metainternal "k8s.io/apimachinery/pkg/apis/meta/internalversion"
@@ -145,7 +146,18 @@ func (r *REST) ShortNames() []string {
 // List selects resources in the storage which match to the selector. 'options' can be nil.
 func (r *REST) List(ctx context.Context, options *metainternal.ListOptions) (runtime.Object, error) {
 	wrappedOptions := apiserverutil.PredicateListOptions(ctx, options)
-	return r.Store.List(ctx, wrappedOptions)
+	rawList, err := r.Store.List(ctx, wrappedOptions)
+	userName, tenantID := authentication.UsernameAndTenantID(ctx)
+	log.Debugf("list projects: (%+v)=>(%+v)", userName, tenantID)
+	if tenantID == "" {
+		return rawList, err
+	}
+	isAdmin, _ := registryUtil.CheckAdmin(ctx, r.authClient, r.businessClient)
+	if isAdmin {
+		return rawList, nil
+	}
+	projectList := rawList.(*business.ProjectList)
+	return registryUtil.FilterWithUser(ctx, projectList, r.authClient)
 }
 
 // DeleteCollection selects all resources in the storage matching given 'listOptions'
