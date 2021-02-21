@@ -90,7 +90,7 @@ func (config Config) New() (authenticator.Request, *spec.SecurityDefinitions, er
 
 	// X509 methods
 	if len(config.ClientCAFile) > 0 {
-		certAuth, err := newAuthenticatorFromClientCAFile(config.ClientCAFile)
+		certAuth, err := NewAuthenticatorFromClientCAFile(config.ClientCAFile)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -181,8 +181,8 @@ func newAuthenticatorFromTokenFile(tokenAuthFile string) (authenticator.Token, e
 	return tokenAuthenticator, nil
 }
 
-// newAuthenticatorFromClientCAFile returns an authenticator.Request or an error
-func newAuthenticatorFromClientCAFile(clientCAFile string) (authenticator.Request, error) {
+// NewAuthenticatorFromClientCAFile returns an authenticator.Request or an error
+func NewAuthenticatorFromClientCAFile(clientCAFile string) (authenticator.Request, error) {
 	roots, err := certutil.NewPool(clientCAFile)
 	if err != nil {
 		return nil, err

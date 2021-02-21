@@ -25,33 +25,33 @@ import (
 	"time"
 
 	"tkestack.io/tke/api/auth"
-	"tkestack.io/tke/pkg/auth/authentication/oidc/identityprovider"
-	"tkestack.io/tke/pkg/auth/authentication/oidc/identityprovider/ldap"
-	local2 "tkestack.io/tke/pkg/auth/authorization/local"
-
-	dexstorage "github.com/dexidp/dex/storage"
-	"github.com/emicklei/go-restful"
-	"k8s.io/apiserver/pkg/server/mux"
-
-	"github.com/casbin/casbin/v2"
-	dexserver "github.com/dexidp/dex/server"
-	"k8s.io/apiserver/pkg/authorization/authorizer"
-	"k8s.io/apiserver/pkg/registry/generic"
-	genericapiserver "k8s.io/apiserver/pkg/server"
-	serverstorage "k8s.io/apiserver/pkg/server/storage"
-
 	authv1 "tkestack.io/tke/api/auth/v1"
 	authinternalclient "tkestack.io/tke/api/client/clientset/internalversion/typed/auth/internalversion"
 	versionedclientset "tkestack.io/tke/api/client/clientset/versioned"
 	versionedinformers "tkestack.io/tke/api/client/informers/externalversions"
+	"tkestack.io/tke/pkg/apiserver/authentication"
 	"tkestack.io/tke/pkg/apiserver/storage"
 	"tkestack.io/tke/pkg/auth/authentication/authenticator"
+	"tkestack.io/tke/pkg/auth/authentication/oidc/identityprovider"
+	"tkestack.io/tke/pkg/auth/authentication/oidc/identityprovider/ldap"
 	"tkestack.io/tke/pkg/auth/authentication/oidc/identityprovider/local"
+	local2 "tkestack.io/tke/pkg/auth/authorization/local"
 	authnhandler "tkestack.io/tke/pkg/auth/handler/authn"
 	authzhandler "tkestack.io/tke/pkg/auth/handler/authz"
 	authrest "tkestack.io/tke/pkg/auth/registry/rest"
 	"tkestack.io/tke/pkg/auth/route"
 	"tkestack.io/tke/pkg/util/log"
+
+	"github.com/casbin/casbin/v2"
+	dexserver "github.com/dexidp/dex/server"
+	dexstorage "github.com/dexidp/dex/storage"
+	"github.com/emicklei/go-restful"
+	"k8s.io/apiserver/pkg/authorization/authorizer"
+	"k8s.io/apiserver/pkg/registry/generic"
+	genericapiserver "k8s.io/apiserver/pkg/server"
+	"k8s.io/apiserver/pkg/server/mux"
+	genericoptions "k8s.io/apiserver/pkg/server/options"
+	serverstorage "k8s.io/apiserver/pkg/server/storage"
 )
 
 const (
@@ -87,6 +87,7 @@ type ExtraConfig struct {
 	DexConfig            *dexserver.Config
 	DexStorage           dexstorage.Storage
 	CasbinEnforcer       *casbin.SyncedEnforcer
+	ClientCert           *genericoptions.ClientCertAuthenticationOptions
 	TokenAuthn           *authenticator.TokenAuthenticator
 	APIKeyAuthn          *authenticator.APIKeyAuthenticator
 	Authorizer           authorizer.Authorizer
@@ -141,7 +142,9 @@ func (c completedConfig) New(delegationTarget genericapiserver.DelegationTarget)
 	installHooks(s, hooks)
 	installCasbinPreStopHook(s, c.ExtraConfig.CasbinEnforcer)
 
-	c.registerRoute(&dexHandler, s.Handler.GoRestfulContainer, s.Handler.NonGoRestfulMux)
+	if err := c.registerRoute(&dexHandler, s.Handler.GoRestfulContainer, s.Handler.NonGoRestfulMux); err != nil {
+		return nil, err
+	}
 
 	m := &APIServer{
 		GenericAPIServer: s,
@@ -208,12 +211,22 @@ func DefaultAPIResourceConfigSource() *serverstorage.ResourceConfig {
 }
 
 // registerRoute is used to register routes with the api server of project.
-func (c completedConfig) registerRoute(dexHandler http.Handler, container *restful.Container, mux *mux.PathRecorderMux) {
+func (c completedConfig) registerRoute(dexHandler http.Handler, container *restful.Container,
+	mux *mux.PathRecorderMux) error {
 	mux.HandlePrefix("/"+auth.IssuerName+"/", dexHandler)
 
 	token := authnhandler.NewHandler(c.ExtraConfig.TokenAuthn, c.ExtraConfig.APIKeyAuthn)
-	authz := authzhandler.NewHandler(c.ExtraConfig.Authorizer)
+
+	if c.ExtraConfig.ClientCert == nil {
+		return fmt.Errorf("empty clientCert in ExtraConfig")
+	}
+	clientCertAuthn, err := authentication.NewAuthenticatorFromClientCAFile(c.ExtraConfig.ClientCert.ClientCA)
+	if err != nil {
+		return err
+	}
+	authz := authzhandler.NewHandler(c.ExtraConfig.Authorizer, clientCertAuthn)
 	route.RegisterAuthRoute(container, token, authz)
+	return nil
 }
 
 // registerHooks is used to register postStart hook to create authn provider with local oidc server.

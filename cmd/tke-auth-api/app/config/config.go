@@ -46,6 +46,7 @@ import (
 	tokenunion "k8s.io/apiserver/pkg/authentication/token/union"
 	"k8s.io/apiserver/pkg/authorization/authorizer"
 	genericapiserver "k8s.io/apiserver/pkg/server"
+	genericoptions "k8s.io/apiserver/pkg/server/options"
 	serverstorage "k8s.io/apiserver/pkg/server/storage"
 
 	authapi "tkestack.io/tke/api/auth"
@@ -90,6 +91,7 @@ type Config struct {
 	DexConfig            *dexserver.Config
 	DexStorage           dexstorage.Storage
 	CasbinEnforcer       *casbin.SyncedEnforcer
+	ClientCert           *genericoptions.ClientCertAuthenticationOptions
 	TokenAuthn           *authenticator.TokenAuthenticator
 	APIKeyAuthn          *authenticator.APIKeyAuthenticator
 	Authorizer           authorizer.Authorizer
@@ -203,6 +205,7 @@ func CreateConfigFromOptions(serverName string, opts *options.Options) (*Config,
 		DexConfig:                      dexConfig,
 		DexStorage:                     dexConfig.Storage,
 		CasbinEnforcer:                 enforcer,
+		ClientCert:                     opts.Authentication.ClientCert,
 		TokenAuthn:                     tokenAuth,
 		APIKeyAuthn:                    apiKeyAuth,
 		Authorizer:                     aggregateAuthz,

@@ -20,28 +20,44 @@ package authz
 
 import (
 	"net/http"
+	genericfilter "tkestack.io/tke/pkg/apiserver/filter"
 
+	authv1 "tkestack.io/tke/api/auth/v1"
+	"tkestack.io/tke/pkg/auth/authorization/util"
 	"tkestack.io/tke/pkg/auth/filter"
+	apiserverfilter "tkestack.io/tke/pkg/platform/apiserver/filter"
+	"tkestack.io/tke/pkg/util/log"
 
 	"github.com/emicklei/go-restful"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apiserver/pkg/authentication/authenticator"
 	"k8s.io/apiserver/pkg/authorization/authorizer"
 	"k8s.io/apiserver/pkg/endpoints/handlers/responsewriters"
-	authv1 "tkestack.io/tke/api/auth/v1"
-	"tkestack.io/tke/pkg/auth/authorization/util"
-	apiserverfilter "tkestack.io/tke/pkg/platform/apiserver/filter"
-
-	"tkestack.io/tke/pkg/util/log"
 )
 
 // Handler handle permission authorization http request.
 type Handler struct {
 	authorizer authorizer.Authorizer
+	// authenticator is an authenticator of X509,
+	// that identifies the requester sending the requests of authz.
+	authenticator authenticator.Request
 }
 
 // NewHandler creates new authorizer handler object.
-func NewHandler(authz authorizer.Authorizer) *Handler {
-	return &Handler{authz}
+func NewHandler(authz authorizer.Authorizer, authn authenticator.Request) *Handler {
+	return &Handler{authz, authn}
+}
+
+// checkIfNotFromGlobal identifies the requester sending the requests of authz,
+// and updates the groups in accessReview.
+func (h *Handler) checkIfNotFromGlobal(accessReview *authv1.SubjectAccessReview, req *http.Request) {
+	resp, ok, err := h.authenticator.AuthenticateRequest(req)
+	if err != nil || !ok {
+		return
+	}
+	if resp.User.GetName() == "webhook" {
+		accessReview.Spec.Groups = genericfilter.GroupsWithNotFromGlobal(accessReview.Spec.Groups)
+	}
 }
 
 // Authorize receive a subject access review request and determine the subject access.
@@ -57,6 +73,7 @@ func (h *Handler) Authorize(request *restful.Request, response *restful.Response
 		responsewriters.WriteRawJSON(http.StatusBadRequest, errors.NewBadRequest(errs.ToAggregate().Error()).Status(), response.ResponseWriter)
 		return
 	}
+	h.checkIfNotFromGlobal(accessReview, request.Request)
 	log.Debug("Receive subjectAccessReview request", log.Any("access review", accessReview))
 	authorizationAttributes := util.AuthorizationAttributesFrom(accessReview.Spec)
 	decision, reason, evaluationErr := h.authorizer.Authorize(request.Request.Context(), authorizationAttributes)

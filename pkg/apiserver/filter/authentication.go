@@ -42,6 +42,8 @@ const (
 	successLabel = "success"
 	failureLabel = "failure"
 	errorLabel   = "error"
+
+	notFromGlobal = "notFromGlobal"
 )
 
 var (
@@ -179,6 +181,19 @@ func GetClusterFromGroups(groups []string) string {
 func IsAnonymous(groups []string) bool {
 	for _, group := range groups {
 		if group == "system:unauthenticated" {
+			return true
+		}
+	}
+	return false
+}
+
+func GroupsWithNotFromGlobal(groups []string) []string {
+	return append(groups, notFromGlobal)
+}
+
+func IfNotFromGlobal(groups []string) bool {
+	for _, group := range groups {
+		if group == notFromGlobal {
 			return true
 		}
 	}

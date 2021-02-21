@@ -85,6 +85,9 @@ func (az *abacAuthorizer) Authorize(ctx context.Context, a authorizer.Attributes
 	if genericfilter.IsAnonymous(groups) {
 		return authorizer.DecisionDeny, "Disable anonymous users", nil
 	}
+	if genericfilter.IfNotFromGlobal(groups) {
+		return authorizer.DecisionNoOpinion, "Disable ABAC authorization for business clusters", nil
+	}
 	for _, p := range az.policyList {
 		if matches(*p, a) {
 			log.Debug("ABAC authorize success", log.Any("attr", a), log.Any("policy", *p))
