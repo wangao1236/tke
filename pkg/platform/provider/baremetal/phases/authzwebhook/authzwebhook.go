@@ -86,6 +86,13 @@ func Install(s ssh.Interface, option *Option) error {
 		webhookKeyName = constants.AdminKeyName
 	}
 
+	if option.IsGlobalCluster {
+		webhookCertFile = constants.AdminCertFile
+		webhookKeyFile = constants.AdminKeyFile
+		webhookCertName = constants.AdminCertName
+		webhookKeyName = constants.AdminKeyName
+	}
+
 	authzWebhookConfig, err := template.ParseString(authzWebhookConfig, map[string]interface{}{
 		"AuthzEndpoint":   option.AuthzWebhookEndpoint,
 		"WebhookCertFile": webhookCertFile,
